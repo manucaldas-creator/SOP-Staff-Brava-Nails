@@ -34,16 +34,14 @@
   .card-status { font-size: 10px; padding: 2px 7px; border-radius: 4px; }
   .card-title { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .faq-item { background: #fff; border: 1px solid #e5e3df; border-radius: 10px; margin-bottom: 6px; overflow: hidden; }
-  .faq-item.urgent { border-color: #f0c8c8; }
   .faq-btn { width: 100%; background: none; border: none; padding: 13px 16px; display: flex; align-items: center; gap: 10px; text-align: left; cursor: pointer; }
-  .faq-btn.urgent { background: #fff9f8; }
   .faq-answer { padding: 10px 16px 14px 48px; border-top: 1px solid #f0eeea; font-size: 14px; line-height: 1.6; color: #333; display: none; }
   .val-item { background: #fff; border: 1px solid #e5e3df; border-radius: 10px; margin-bottom: 8px; overflow: hidden; }
   .val-btn { width: 100%; background: none; border: none; padding: 14px 16px; display: flex; align-items: center; gap: 12px; text-align: left; cursor: pointer; }
   .val-body { padding: 0 16px 14px 52px; border-top: 1px solid #f0eeea; display: none; }
-  .page-header { background: #4d6dff; padding: 16px 16px 20px; }
-  .back { color: rgba(255,255,255,0.8); font-size: 14px; display: block; margin-bottom: 12px; cursor: pointer; }
-  .page-title { color: #fff; font-size: 19px; font-weight: 600; line-height: 1.3; }
+  .page-header { padding: 16px 16px 20px; }
+  .back { font-size: 14px; display: block; margin-bottom: 12px; cursor: pointer; opacity: 0.8; }
+  .page-title { font-size: 19px; font-weight: 600; line-height: 1.3; color: #fff; }
   .section-body { background: #fff; border: 1px solid #e5e3df; border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
   .block-p { font-size: 14px; color: #333; line-height: 1.7; margin-bottom: 8px; }
   .block-bullet { padding: 7px 12px; border-radius: 6px; font-size: 14px; line-height: 1.5; margin-bottom: 3px; }
@@ -59,80 +57,125 @@
 <div id="app"></div>
 <script>
 const PROXY = 'https://brava-notion-proxy.manu-caldas.workers.dev'
-const DB = {
-  sops:    '6d7b2b96-566f-4c9c-aabb-329789feae5c',
-  faqs:    'fdf80135-d1e9-4c07-b329-ccc049a45a50',
-  culture: '02b15e9b-e4c1-4d28-8177-f4b18c84d700',
-}
+const SOPS_DB    = '6d7b2b96-566f-4c9c-aabb-329789feae5c'
+const FAQS_DB    = 'fdf80135-d1e9-4c07-b329-ccc049a45a50'
+const CULTURE_DB = '02b15e9b-e4c1-4d28-8177-f4b18c84d700'
+
 const SERIES = {
-  Treatments:       { key:'T', color:'#185fa5', bg:'#e6f1fb', owner:'Alicia' },
-  Hygiene:          { key:'H', color:'#854f0b', bg:'#faeeda', owner:'Alicia' },
-  'Studio Ops':     { key:'S', color:'#534ab7', bg:'#eeedfe', owner:'Manu' },
-  'Client Journey': { key:'C', color:'#0f6e56', bg:'#e1f5ee', owner:'Manu' },
+  'Treatments':      { key:'T', color:'#185fa5', bg:'#e6f1fb', owner:'Alicia' },
+  'Hygiene':         { key:'H', color:'#854f0b', bg:'#faeeda', owner:'Alicia' },
+  'Studio Ops':      { key:'S', color:'#534ab7', bg:'#eeedfe', owner:'Manu' },
+  'Client Journey':  { key:'C', color:'#0f6e56', bg:'#e1f5ee', owner:'Manu' },
 }
 const ORDER  = ['T','H','S','C']
 const LABELS = { T:'Treatments', H:'Hygiene', S:'Studio Ops', C:'Client Journey' }
 
 let S = { tab:'sops', search:'', series:'ALL', sops:[], faqs:[], culture:[], loading:true, page:null, pageBlocks:null }
 
-async function api(path, body) {
-  const r = await fetch(PROXY + '/' + path, {
-    method: body ? 'POST' : 'GET',
+async function notionQuery(dbId, body) {
+  const url = PROXY + '/databases/' + dbId + '/query'
+  const res = await fetch(url, {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
+    body: JSON.stringify(body)
   })
-  return r.json()
+  const data = await res.json()
+  return data.results || []
+}
+
+async function notionBlocks(pageId) {
+  const url = PROXY + '/blocks/' + pageId + '/children?page_size=100'
+  const res = await fetch(url, { method: 'GET' })
+  const data = await res.json()
+  return data.results || []
 }
 
 function rt(arr) { return (arr||[]).map(r=>r.plain_text||'').join('') }
 function gp(props, name) {
-  const p = props[name]; if(!p) return ''
-  if(p.type==='title') return rt(p.title)
-  if(p.type==='rich_text') return rt(p.rich_text)
-  if(p.type==='select') return p.select?.name||''
+  const p = props[name]
+  if (!p) return ''
+  if (p.type==='title')     return rt(p.title)
+  if (p.type==='rich_text') return rt(p.rich_text)
+  if (p.type==='select')    return p.select ? p.select.name : ''
   return ''
 }
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
 
 async function loadAll() {
   try {
+    const sorts_sops    = [{ property:'Series', direction:'ascending' },{ property:'Sort Order', direction:'ascending' }]
+    const sorts_order   = [{ property:'Sort Order', direction:'ascending' }]
+
     const [sr, fr, cr] = await Promise.all([
-      api(`databases/${DB.sops}/query`,    { sorts:[{property:'Series',direction:'ascending'},{property:'Sort Order',direction:'ascending'}] }),
-      api(`databases/${DB.faqs}/query`,    { sorts:[{property:'Sort Order',direction:'ascending'}] }),
-      api(`databases/${DB.culture}/query`, { sorts:[{property:'Sort Order',direction:'ascending'}] }),
+      notionQuery(SOPS_DB,    { sorts: sorts_sops }),
+      notionQuery(FAQS_DB,    { sorts: sorts_order }),
+      notionQuery(CULTURE_DB, { sorts: sorts_order }),
     ])
-    S.sops = (sr.results||[]).map(p => {
-      const series = gp(p.properties,'Series'), name = gp(p.properties,'Name')
-      return { id:p.id, code:gp(p.properties,'Code'), title:name.replace(/^SOP-[A-Z]+\d+[a-z]?\s*[—\-–]\s*/i,'').trim(), series, seriesKey:(SERIES[series]||{}).key||'S', status:gp(p.properties,'Status'), icon:p.icon?.emoji||'📋', url:p.url }
+
+    S.sops = sr.map(p => {
+      const series = gp(p.properties, 'Series')
+      const name   = gp(p.properties, 'Name')
+      return {
+        id:        p.id,
+        code:      gp(p.properties, 'Code'),
+        title:     name.replace(/^SOP-[A-Z]+\d+[a-z]?\s*[—\-–]\s*/i, '').trim(),
+        series:    series,
+        seriesKey: SERIES[series] ? SERIES[series].key : 'S',
+        status:    gp(p.properties, 'Status'),
+        icon:      p.icon && p.icon.emoji ? p.icon.emoji : '📋',
+        url:       p.url
+      }
     })
-    S.faqs = (fr.results||[]).map(p => ({ id:p.id, question:gp(p.properties,'Question'), category:gp(p.properties,'Category'), urgency:gp(p.properties,'Urgency'), icon:p.icon?.emoji||'❓', url:p.url }))
-    S.culture = (cr.results||[]).map(p => ({ id:p.id, title:gp(p.properties,'Title'), type:gp(p.properties,'Type'), icon:p.icon?.emoji||'🧭', url:p.url }))
-  } catch(e) { console.error('Load error:', e) }
-  S.loading = false; render()
+
+    S.faqs = fr.map(p => ({
+      id:       p.id,
+      question: gp(p.properties, 'Question'),
+      category: gp(p.properties, 'Category'),
+      urgency:  gp(p.properties, 'Urgency'),
+      icon:     p.icon && p.icon.emoji ? p.icon.emoji : '❓',
+      url:      p.url
+    }))
+
+    S.culture = cr.map(p => ({
+      id:    p.id,
+      title: gp(p.properties, 'Title'),
+      type:  gp(p.properties, 'Type'),
+      icon:  p.icon && p.icon.emoji ? p.icon.emoji : '🧭',
+      url:   p.url
+    }))
+
+  } catch(e) {
+    console.error('Error loading from Notion:', e)
+  }
+  S.loading = false
+  render()
 }
 
-async function loadPageBlocks(id) {
+async function loadPage(id) {
   try {
-    const r = await api(`blocks/${id}/children?page_size=100`)
-    S.pageBlocks = r.results||[]
-  } catch(e) { S.pageBlocks = [] }
+    S.pageBlocks = await notionBlocks(id)
+  } catch(e) {
+    S.pageBlocks = []
+  }
   render()
 }
 
 function renderBlocks(blocks) {
   return (blocks||[]).map(b => {
-    const t = rt((b[b.type]||{}).rich_text||[])
-    if(b.type==='paragraph' && t.trim()) return `<p class="block-p">${esc(t)}</p>`
-    if(b.type==='bulleted_list_item'||b.type==='numbered_list_item') {
-      const w = t.includes('⚠️')||t.includes('⛔')
-      return `<div class="block-bullet" style="background:${w?'#fff9f8':'#fafaf8'};border-left:3px solid ${w?'#da5346':'transparent'}">${esc(t)}</div>`
+    const d = b[b.type]
+    const t = rt((d && d.rich_text) ? d.rich_text : [])
+    if (b.type==='paragraph' && t.trim()) return '<p class="block-p">' + esc(t) + '</p>'
+    if (b.type==='bulleted_list_item' || b.type==='numbered_list_item') {
+      const w = t.includes('⚠️') || t.includes('⛔')
+      return '<div class="block-bullet" style="background:' + (w?'#fff9f8':'#fafaf8') + ';border-left:3px solid ' + (w?'#da5346':'transparent') + '">' + esc(t) + '</div>'
     }
-    if(b.type==='callout') {
-      const em=b.callout?.icon?.emoji||'💡', w=['⚠️','⛔','🚫'].includes(em)
-      return `<div class="block-callout" style="background:${w?'#fff9f8':'#f4f2ee'};border-left:3px solid ${w?'#da5346':'#4d6dff'}">${em} ${esc(t)}</div>`
+    if (b.type==='callout') {
+      const em = b.callout && b.callout.icon ? b.callout.icon.emoji : '💡'
+      const w = em==='⚠️' || em==='⛔' || em==='🚫'
+      return '<div class="block-callout" style="background:' + (w?'#fff9f8':'#f4f2ee') + ';border-left:3px solid ' + (w?'#da5346':'#4d6dff') + '">' + em + ' ' + esc(t) + '</div>'
     }
-    if(b.type==='heading_2'||b.type==='heading_3') return `<div class="block-h">${esc(t)}</div>`
-    if(b.type==='divider') return `<hr style="border:none;border-top:1px solid #e5e3df;margin:10px 0">`
+    if (b.type==='heading_2' || b.type==='heading_3') return '<div class="block-h">' + esc(t) + '</div>'
+    if (b.type==='divider') return '<hr style="border:none;border-top:1px solid #e5e3df;margin:10px 0">'
     return ''
   }).join('')
 }
@@ -142,143 +185,161 @@ function render() {
 }
 
 function renderHome() {
-  return `<div style="max-width:720px;margin:0 auto">
-    <div class="header">
-      <div class="header-top"><span class="logo">★ Brava Staff Hub</span><span style="color:rgba(255,255,255,0.6);font-size:12px">Brava Nails Berlin</span></div>
-      <input class="search" id="search" type="text" placeholder="Search..." value="${esc(S.search)}" oninput="S.search=this.value;render()">
-      <div class="tabs">
-        <button class="tab${S.tab==='sops'?' active':''}" onclick="S.tab='sops';S.search='';render()">SOPs</button>
-        <button class="tab${S.tab==='faqs'?' active':''}" onclick="S.tab='faqs';S.search='';render()">FAQs</button>
-        <button class="tab${S.tab==='culture'?' active':''}" onclick="S.tab='culture';S.search='';render()">Culture</button>
-      </div>
-    </div>
-    <div class="content">
-      ${S.loading ? '<div class="loading">Loading...</div>' : S.tab==='sops' ? renderSops() : S.tab==='faqs' ? renderFaqs() : renderCulture()}
-    </div>
-  </div>`
+  return '<div style="max-width:720px;margin:0 auto">' +
+    '<div class="header">' +
+      '<div class="header-top"><span class="logo">★ Brava Staff Hub</span><span style="color:rgba(255,255,255,0.6);font-size:12px">Brava Nails Berlin</span></div>' +
+      '<input class="search" id="search" type="text" placeholder="Search..." value="' + esc(S.search) + '" oninput="S.search=this.value;render()">' +
+      '<div class="tabs">' +
+        '<button class="tab' + (S.tab==='sops'?' active':'') + '" onclick="S.tab=\'sops\';S.search=\'\';render()">SOPs</button>' +
+        '<button class="tab' + (S.tab==='faqs'?' active':'') + '" onclick="S.tab=\'faqs\';S.search=\'\';render()">FAQs</button>' +
+        '<button class="tab' + (S.tab==='culture'?' active':'') + '" onclick="S.tab=\'culture\';S.search=\'\';render()">Culture</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="content">' +
+      (S.loading ? '<div class="loading">Loading...</div>' : S.tab==='sops' ? renderSops() : S.tab==='faqs' ? renderFaqs() : renderCulture()) +
+    '</div>' +
+  '</div>'
 }
 
 function renderSops() {
-  const live = S.sops.filter(s=>s.status==='Live').length
+  const live = S.sops.filter(function(s){ return s.status==='Live' }).length
   const q = S.search.toLowerCase()
-  const filtered = S.sops.filter(s => (S.series==='ALL'||s.seriesKey===S.series) && (!q||s.title.toLowerCase().includes(q)||s.code.toLowerCase().includes(q)))
+  const filtered = S.sops.filter(function(s) {
+    const ms = S.series==='ALL' || s.seriesKey===S.series
+    const mq = !q || s.title.toLowerCase().indexOf(q)>=0 || s.code.toLowerCase().indexOf(q)>=0
+    return ms && mq
+  })
   const grouped = {}
-  ORDER.forEach(k => { const items=filtered.filter(s=>s.seriesKey===k); if(items.length) grouped[k]=items })
-  return `
-    <div class="stats">
-      <div class="stat"><div class="stat-n">${live}</div><div class="stat-l">Live</div></div>
-      <div class="stat"><div class="stat-n">${S.sops.length}</div><div class="stat-l">Total</div></div>
-      <div class="stat"><div class="stat-n">4</div><div class="stat-l">Series</div></div>
-    </div>
-    <div class="filters">
-      ${['ALL',...ORDER].map(s => {
-        const active=S.series===s, cfg=SERIES[LABELS[s]]
-        return `<button class="filter" style="${active&&cfg?`background:${cfg.bg};color:${cfg.color};border:none;font-weight:500`:active?'background:#4d6dff;color:#fff;border:none;font-weight:500':''}" onclick="S.series='${s}';render()">${s==='ALL'?'All':LABELS[s]}</button>`
-      }).join('')}
-    </div>
-    ${ORDER.filter(k=>grouped[k]).map(k => {
-      const cfg=SERIES[LABELS[k]]
-      return `<div class="series-group">
-        <div class="series-header">
-          <div class="series-badge" style="background:${cfg.bg};color:${cfg.color}">${k}</div>
-          <span style="font-weight:600;font-size:15px">${LABELS[k]}</span>
-          <span style="font-size:12px;color:#999;margin-left:auto">Owner: ${cfg.owner}</span>
-        </div>
-        ${grouped[k].map(sop => {
-          const live=sop.status==='Live'
-          return `<div class="card${live?'':' dimmed'}" ${live?`onclick="goPage('${sop.id}','sop','${esc(sop.title)}','${sop.icon}','${esc(sop.url)}')"`:''}> 
-            <span class="card-icon">${sop.icon}</span>
-            <div class="card-body">
-              <div class="card-meta">
-                <span class="card-code" style="color:${cfg.color}">${sop.code}</span>
-                <span class="card-status" style="background:${live?'#e1f5ee':'#f0eeea'};color:${live?'#0f6e56':'#999'}">${sop.status}</span>
-              </div>
-              <div class="card-title">${esc(sop.title)}</div>
-            </div>
-            ${live?'<span style="color:#bbb;font-size:18px">›</span>':''}
-          </div>`
-        }).join('')}
-      </div>`
-    }).join('')}
-    ${Object.keys(grouped).length===0?'<div class="empty">No SOPs found.</div>':''}`
+  ORDER.forEach(function(k) {
+    const items = filtered.filter(function(s){ return s.seriesKey===k })
+    if (items.length) grouped[k] = items
+  })
+
+  let html = '<div class="stats">' +
+    '<div class="stat"><div class="stat-n">' + live + '</div><div class="stat-l">Live</div></div>' +
+    '<div class="stat"><div class="stat-n">' + S.sops.length + '</div><div class="stat-l">Total</div></div>' +
+    '<div class="stat"><div class="stat-n">4</div><div class="stat-l">Series</div></div>' +
+  '</div><div class="filters">'
+
+  ;['ALL'].concat(ORDER).forEach(function(s) {
+    const active = S.series===s
+    const cfg = SERIES[LABELS[s]]
+    const style = active && cfg ? 'background:'+cfg.bg+';color:'+cfg.color+';border:none;font-weight:500'
+                : active ? 'background:#4d6dff;color:#fff;border:none;font-weight:500' : ''
+    html += '<button class="filter" style="' + style + '" onclick="S.series=\'' + s + '\';render()">' + (s==='ALL'?'All':LABELS[s]) + '</button>'
+  })
+  html += '</div>'
+
+  Object.keys(grouped).forEach(function(k) {
+    const cfg = SERIES[LABELS[k]]
+    html += '<div class="series-group">' +
+      '<div class="series-header">' +
+        '<div class="series-badge" style="background:'+cfg.bg+';color:'+cfg.color+'">' + k + '</div>' +
+        '<span style="font-weight:600;font-size:15px">' + LABELS[k] + '</span>' +
+        '<span style="font-size:12px;color:#999;margin-left:auto">Owner: ' + cfg.owner + '</span>' +
+      '</div>'
+    grouped[k].forEach(function(sop) {
+      const live = sop.status==='Live'
+      html += '<div class="card' + (live?'':' dimmed') + '"' + (live?' onclick="goPage(\''+sop.id+'\',\''+esc(sop.title)+'\',\''+sop.icon+'\',\''+esc(sop.url)+'\',\'#4d6dff\')"':'') + '>' +
+        '<span class="card-icon">' + sop.icon + '</span>' +
+        '<div class="card-body">' +
+          '<div class="card-meta">' +
+            '<span class="card-code" style="color:'+cfg.color+'">' + sop.code + '</span>' +
+            '<span class="card-status" style="background:' + (live?'#e1f5ee':'#f0eeea') + ';color:' + (live?'#0f6e56':'#999') + '">' + sop.status + '</span>' +
+          '</div>' +
+          '<div class="card-title">' + esc(sop.title) + '</div>' +
+        '</div>' +
+        (live ? '<span style="color:#bbb;font-size:18px">›</span>' : '') +
+      '</div>'
+    })
+    html += '</div>'
+  })
+
+  if (!Object.keys(grouped).length) html += '<div class="empty">No SOPs found.</div>'
+  return html
 }
 
 function renderFaqs() {
   const q = S.search.toLowerCase()
-  const filtered = S.faqs.filter(f=>!q||f.question.toLowerCase().includes(q))
-  if(!filtered.length) return '<div class="empty">No FAQs found.</div>'
-  return `<p style="font-size:13px;color:#888;margin-bottom:16px">Quick answers. Tap to expand.</p>
-    ${filtered.map((f,i) => `
-    <div class="faq-item${f.urgency==='Urgent'?' urgent':''}">
-      <button class="faq-btn${f.urgency==='Urgent'?' urgent':''}" onclick="toggleItem('fa${i}','ft${i}')">
-        <span style="font-size:18px;flex-shrink:0">${f.icon}</span>
-        <div style="flex:1">
-          <div style="font-weight:500;font-size:14px">${esc(f.question)}</div>
-          <div style="display:flex;gap:6px;margin-top:4px">
-            ${f.category?`<span class="tag" style="background:#e6f1fb;color:#185fa5">${f.category}</span>`:''}
-            ${f.urgency==='Urgent'?'<span class="tag" style="background:#fff0ee;color:#da5346">⚠️ Urgent</span>':''}
-          </div>
-        </div>
-        <span id="ft${i}" style="color:#4d6dff;font-size:20px;font-weight:300">+</span>
-      </button>
-      <div class="faq-answer" id="fa${i}">
-        <a onclick="goPage('${f.id}','faq','${esc(f.question)}','${f.icon}','${esc(f.url)}')" style="color:#4d6dff;cursor:pointer;font-size:13px">Read full answer →</a>
-      </div>
-    </div>`).join('')}`
+  const filtered = S.faqs.filter(function(f){ return !q || f.question.toLowerCase().indexOf(q)>=0 })
+  if (!filtered.length) return '<div class="empty">No FAQs found.</div>'
+  let html = '<p style="font-size:13px;color:#888;margin-bottom:16px">Quick answers. Tap to expand.</p>'
+  filtered.forEach(function(f, i) {
+    const urgent = f.urgency==='Urgent'
+    html += '<div class="faq-item' + (urgent?' urgent':'') + '">' +
+      '<button class="faq-btn' + (urgent?' style="background:#fff9f8"':'') + '" onclick="toggleItem(\'fa'+i+'\',\'ft'+i+'\')">' +
+        '<span style="font-size:18px;flex-shrink:0">' + f.icon + '</span>' +
+        '<div style="flex:1">' +
+          '<div style="font-weight:500;font-size:14px">' + esc(f.question) + '</div>' +
+          '<div style="display:flex;gap:6px;margin-top:4px">' +
+            (f.category ? '<span class="tag" style="background:#e6f1fb;color:#185fa5">'+f.category+'</span>' : '') +
+            (urgent ? '<span class="tag" style="background:#fff0ee;color:#da5346">⚠️ Urgent</span>' : '') +
+          '</div>' +
+        '</div>' +
+        '<span id="ft'+i+'" style="color:#4d6dff;font-size:20px;font-weight:300">+</span>' +
+      '</button>' +
+      '<div class="faq-answer" id="fa'+i+'">' +
+        '<a onclick="goPage(\''+f.id+'\',\''+esc(f.question)+'\',\''+f.icon+'\',\''+esc(f.url)+'\',\'#4d6dff\')" style="color:#4d6dff;cursor:pointer;font-size:13px">Read full answer →</a>' +
+      '</div>' +
+    '</div>'
+  })
+  return html
 }
 
 function renderCulture() {
-  if(!S.culture.length) return '<div class="empty">No culture entries found.</div>'
-  return `<p style="font-size:13px;color:#888;margin-bottom:16px">Who we are and how we show up every day.</p>
-    ${S.culture.map((v,i) => `
-    <div class="val-item">
-      <button class="val-btn" onclick="toggleItem('va${i}','vt${i}')">
-        <span style="font-size:24px">${v.icon}</span>
-        <div style="flex:1">
-          <div style="font-weight:600;font-size:15px">${esc(v.title)}</div>
-          ${v.type?`<span class="tag" style="background:#eeedfe;color:#534ab7;margin-top:4px;display:inline-block">${v.type}</span>`:''}
-        </div>
-        <span id="vt${i}" style="color:#4d6dff;font-size:20px;font-weight:300">+</span>
-      </button>
-      <div class="val-body" id="va${i}">
-        <a onclick="goPage('${v.id}','culture','${esc(v.title)}','${v.icon}','${esc(v.url)}')" style="color:#4d6dff;cursor:pointer;font-size:13px;display:block;padding-top:10px">Read in full →</a>
-      </div>
-    </div>`).join('')}`
+  if (!S.culture.length) return '<div class="empty">No entries found.</div>'
+  let html = '<p style="font-size:13px;color:#888;margin-bottom:16px">Who we are and how we show up every day.</p>'
+  S.culture.forEach(function(v, i) {
+    html += '<div class="val-item">' +
+      '<button class="val-btn" onclick="toggleItem(\'va'+i+'\',\'vt'+i+'\')">' +
+        '<span style="font-size:24px">' + v.icon + '</span>' +
+        '<div style="flex:1">' +
+          '<div style="font-weight:600;font-size:15px">' + esc(v.title) + '</div>' +
+          (v.type ? '<span class="tag" style="background:#eeedfe;color:#534ab7;margin-top:4px;display:inline-block">'+v.type+'</span>' : '') +
+        '</div>' +
+        '<span id="vt'+i+'" style="color:#4d6dff;font-size:20px;font-weight:300">+</span>' +
+      '</button>' +
+      '<div class="val-body" id="va'+i+'">' +
+        '<a onclick="goPage(\''+v.id+'\',\''+esc(v.title)+'\',\''+v.icon+'\',\''+esc(v.url)+'\',\'#534ab7\')" style="color:#534ab7;cursor:pointer;font-size:13px;display:block;padding-top:10px">Read in full →</a>' +
+      '</div>' +
+    '</div>'
+  })
+  return html
 }
 
 function renderPage() {
   const p = S.page
-  const accent = p.type==='culture' ? '#534ab7' : '#4d6dff'
-  return `<div style="max-width:720px;margin:0 auto">
-    <div class="page-header" style="background:${accent}">
-      <span class="back" onclick="S.page=null;S.pageBlocks=null;render()">← Back</span>
-      <div style="display:flex;align-items:flex-start;gap:12px">
-        <span style="font-size:28px">${p.icon}</span>
-        <div class="page-title">${esc(p.title)}</div>
-      </div>
-    </div>
-    <div style="padding:20px 16px 60px">
-      ${!S.pageBlocks ? '<div class="loading">Loading content...</div>' : `
-        <div class="section-body">${renderBlocks(S.pageBlocks)}</div>
-        <a class="notion-link" href="${p.url}" target="_blank">View & edit in Notion ↗</a>
-      `}
-    </div>
-  </div>`
+  return '<div style="max-width:720px;margin:0 auto">' +
+    '<div class="page-header" style="background:' + p.accent + '">' +
+      '<span class="back" onclick="S.page=null;S.pageBlocks=null;render()" style="color:rgba(255,255,255,0.8)">← Back</span>' +
+      '<div style="display:flex;align-items:flex-start;gap:12px">' +
+        '<span style="font-size:28px">' + p.icon + '</span>' +
+        '<div class="page-title">' + esc(p.title) + '</div>' +
+      '</div>' +
+    '</div>' +
+    '<div style="padding:20px 16px 60px">' +
+      (!S.pageBlocks ? '<div class="loading">Loading content...</div>' :
+        '<div class="section-body">' + renderBlocks(S.pageBlocks) + '</div>' +
+        '<a class="notion-link" href="' + p.url + '" target="_blank">View & edit in Notion ↗</a>'
+      ) +
+    '</div>' +
+  '</div>'
 }
 
 function toggleItem(bodyId, togId) {
-  const body=document.getElementById(bodyId), tog=document.getElementById(togId)
-  if(!body||!tog) return
-  const open = body.style.display==='block'
-  body.style.display = open?'none':'block'
-  tog.textContent = open?'+':'−'
+  const body = document.getElementById(bodyId)
+  const tog  = document.getElementById(togId)
+  if (!body || !tog) return
+  const open = body.style.display === 'block'
+  body.style.display = open ? 'none' : 'block'
+  tog.textContent = open ? '+' : '−'
 }
 
-function goPage(id, type, title, icon, url) {
-  S.page = { id, type, title, icon, url }
+function goPage(id, title, icon, url, accent) {
+  S.page = { id:id, title:title, icon:icon, url:url, accent:accent||'#4d6dff' }
   S.pageBlocks = null
   render()
-  loadPageBlocks(id)
+  loadPage(id)
 }
 
 render()
